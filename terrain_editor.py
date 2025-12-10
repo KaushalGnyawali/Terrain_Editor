@@ -582,8 +582,6 @@ def export_line_to_shapefile(coords_latlon, line_crs=None):
 def export_line_to_kml(coords_latlon):
     """Export line coordinates to KML format."""
     try:
-        from lxml import etree as ET_lxml
-        
         if not coords_latlon or len(coords_latlon) < 2:
             return None
         
