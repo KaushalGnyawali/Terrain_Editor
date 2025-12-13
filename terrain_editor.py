@@ -36,6 +36,7 @@ import plotly.graph_objects as go
 import zipfile
 import tempfile
 import xml.etree.ElementTree as ET
+import uuid
 try:
     import geopandas as gpd
     HAS_GEOPANDAS = True
@@ -526,14 +527,33 @@ def process_uploaded_shapefile(uploaded_file):
         return None
 
 def process_uploaded_kml(uploaded_file):
-    """Process uploaded KML file and extract LineString coordinates."""
+    """Process uploaded KML or KMZ file and extract LineString coordinates."""
     try:
         # Read file content
+        uploaded_file.seek(0)
         content = uploaded_file.read()
         uploaded_file.seek(0)  # Reset file pointer
         
+        # Check if it's a KMZ file (ZIP archive)
+        kml_content = None
+        if content[:2] == b'PK':  # KMZ (ZIP archive)
+            import zipfile as zip_module
+            try:
+                with zip_module.ZipFile(io.BytesIO(content), 'r') as kmz_zip:
+                    kml_files = [f for f in kmz_zip.namelist() if f.lower().endswith('.kml')]
+                    if kml_files:
+                        kml_content = kmz_zip.read(kml_files[0])
+                    else:
+                        st.error("No KML file found in KMZ archive")
+                        return None
+            except Exception as e:
+                st.error(f"Error extracting KMZ file: {str(e)}")
+                return None
+        else:
+            kml_content = content
+        
         # Parse KML XML
-        root = ET.fromstring(content)
+        root = ET.fromstring(kml_content)
         
         # Try different namespace formats
         namespaces = [
@@ -575,11 +595,11 @@ def process_uploaded_kml(uploaded_file):
         if coords_list:
             return coords_list
         else:
-            st.error("No coordinates found in KML file")
+            st.error("No coordinates found in KML/KMZ file")
             return None
             
     except Exception as e:
-        st.error(f"Error processing uploaded KML: {e}")
+        st.error(f"Error processing uploaded KML/KMZ: {e}")
         return None
 
 def process_uploaded_polygon_shapefile(uploaded_file):
@@ -658,14 +678,33 @@ def process_uploaded_polygon_shapefile(uploaded_file):
         return None
 
 def process_uploaded_polygon_kml(uploaded_file):
-    """Process uploaded KML file and extract Polygon coordinates."""
+    """Process uploaded KML or KMZ file and extract Polygon coordinates."""
     try:
         # Read file content
+        uploaded_file.seek(0)
         content = uploaded_file.read()
         uploaded_file.seek(0)  # Reset file pointer
         
+        # Check if it's a KMZ file (ZIP archive)
+        kml_content = None
+        if content[:2] == b'PK':  # KMZ (ZIP archive)
+            import zipfile as zip_module
+            try:
+                with zip_module.ZipFile(io.BytesIO(content), 'r') as kmz_zip:
+                    kml_files = [f for f in kmz_zip.namelist() if f.lower().endswith('.kml')]
+                    if kml_files:
+                        kml_content = kmz_zip.read(kml_files[0])
+                    else:
+                        st.error("No KML file found in KMZ archive")
+                        return None
+            except Exception as e:
+                st.error(f"Error extracting KMZ file: {str(e)}")
+                return None
+        else:
+            kml_content = content
+        
         # Parse KML XML
-        root = ET.fromstring(content)
+        root = ET.fromstring(kml_content)
         
         # Try different namespace formats
         namespaces = [
@@ -707,11 +746,11 @@ def process_uploaded_polygon_kml(uploaded_file):
         if coords_list:
             return coords_list
         else:
-            st.error("No polygon coordinates found in KML file")
+            st.error("No polygon coordinates found in KML/KMZ file")
             return None
             
     except Exception as e:
-        st.error(f"Error processing uploaded polygon KML: {e}")
+        st.error(f"Error processing uploaded polygon KML/KMZ: {e}")
         return None
 
 def export_polygon_to_shapefile(coords_latlon, poly_crs=None):
@@ -802,6 +841,196 @@ def export_polygon_to_geojson(coords_latlon):
     except Exception as e:
         st.error(f"Error exporting polygon to GeoJSON: {e}")
         return None
+
+def process_uploaded_contours(uploaded_file):
+    """Process uploaded contour file (Shapefile, KML, or KMZ) and return GeoDataFrame."""
+    try:
+        if not HAS_GEOPANDAS:
+            return None, "geopandas is required for contour processing. Install with: pip install geopandas"
+        
+        filename = uploaded_file.name.lower() if uploaded_file.name else ""
+        
+        if filename.endswith('.zip'):
+            # Shapefile ZIP
+            import zipfile as zip_module
+            # Save uploaded file to temporary location
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_file:
+                tmp_file.write(uploaded_file.read())
+                tmp_zip_path = tmp_file.name
+            
+            # Extract ZIP to temporary directory
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                try:
+                    with zip_module.ZipFile(tmp_zip_path, 'r') as zip_ref:
+                        zip_ref.extractall(tmp_dir)
+                except Exception as e:
+                    return None, f"Error extracting ZIP file: {str(e)}"
+                
+                # Find .shp file
+                shp_files = list(Path(tmp_dir).glob('*.shp'))
+                if not shp_files:
+                    return None, "No .shp file found in uploaded ZIP"
+                
+                shp_path = shp_files[0]
+                
+                # Validate shapefile components
+                base_name = shp_path.stem
+                required_files = ['.shp', '.shx', '.dbf']
+                missing_files = []
+                for ext in required_files:
+                    if not (shp_path.parent / f"{base_name}{ext}").exists():
+                        missing_files.append(ext)
+                
+                if missing_files:
+                    return None, f"Incomplete shapefile. Missing: {', '.join(missing_files)}"
+                
+                # Read shapefile
+                gdf = gpd.read_file(str(shp_path))
+                contour_crs = gdf.crs
+                return gdf, contour_crs
+        
+        elif filename.endswith(('.kml', '.kmz')):
+            # KML or KMZ file
+            uploaded_file.seek(0)
+            content = uploaded_file.read()
+            
+            kml_content = None
+            if content[:2] == b'PK':  # KMZ (ZIP archive)
+                import zipfile as zip_module
+                try:
+                    with zip_module.ZipFile(io.BytesIO(content), 'r') as kmz_zip:
+                        kml_files = [f for f in kmz_zip.namelist() if f.lower().endswith('.kml')]
+                        if kml_files:
+                            kml_content = kmz_zip.read(kml_files[0])
+                        else:
+                            return None, "No KML file found in KMZ archive"
+                except Exception as e:
+                    return None, f"Error extracting KMZ file: {str(e)}"
+            else:
+                kml_content = content
+            
+            # Write to temporary file for geopandas
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.kml', mode='wb') as tmp_file:
+                if isinstance(kml_content, bytes):
+                    tmp_file.write(kml_content)
+                else:
+                    tmp_file.write(kml_content.encode('utf-8'))
+                tmp_kml_path = tmp_file.name
+            
+            try:
+                gdf = gpd.read_file(tmp_kml_path, driver='KML')
+                crs = gdf.crs if gdf.crs else "EPSG:4326"
+                return gdf, crs
+            except Exception as e:
+                return None, f"Error reading KML/KMZ file: {str(e)}"
+        
+        else:
+            return None, "Unsupported file format. Please upload Shapefile (.zip), KML (.kml), or KMZ (.kmz)"
+    
+    except Exception as e:
+        return None, f"Error processing contour file: {str(e)}"
+
+def process_uploaded_vector_file(uploaded_file):
+    """Process uploaded vector file (Shapefile, KML, KMZ, or GeoJSON) and return GeoDataFrame with CRS."""
+    try:
+        if not HAS_GEOPANDAS:
+            return None, None, "geopandas is required for vector file processing. Install with: pip install geopandas"
+        
+        filename = uploaded_file.name.lower() if uploaded_file.name else ""
+        
+        # Save uploaded file to temporary location
+        if filename.endswith('.zip'):
+            # Shapefile ZIP
+            import zipfile as zip_module
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_file:
+                tmp_file.write(uploaded_file.read())
+                tmp_zip_path = tmp_file.name
+            
+            # Extract ZIP to temporary directory
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                try:
+                    with zip_module.ZipFile(tmp_zip_path, 'r') as zip_ref:
+                        zip_ref.extractall(tmp_dir)
+                except Exception as e:
+                    return None, None, f"Error extracting ZIP file: {str(e)}"
+                
+                # Find .shp file
+                shp_files = list(Path(tmp_dir).glob('*.shp'))
+                if not shp_files:
+                    return None, None, "No .shp file found in uploaded ZIP"
+                
+                shp_path = shp_files[0]
+                
+                # Validate shapefile components
+                base_name = shp_path.stem
+                required_files = ['.shp', '.shx', '.dbf']
+                missing_files = []
+                for ext in required_files:
+                    if not (shp_path.parent / f"{base_name}{ext}").exists():
+                        missing_files.append(ext)
+                
+                if missing_files:
+                    return None, None, f"Incomplete shapefile. Missing: {', '.join(missing_files)}"
+                
+                gdf = gpd.read_file(str(shp_path))
+                crs = gdf.crs
+                return gdf, crs, None
+        
+        elif filename.endswith(('.kml', '.kmz')):
+            # KML or KMZ file
+            uploaded_file.seek(0)
+            content = uploaded_file.read()
+            
+            # Check if it's a KMZ file (ZIP archive)
+            is_kmz = False
+            kml_content = None
+            
+            if content[:2] == b'PK':  # ZIP file signature
+                is_kmz = True
+                import zipfile as zip_module
+                try:
+                    with zip_module.ZipFile(io.BytesIO(content), 'r') as kmz_zip:
+                        # Find the KML file inside (usually doc.kml or the first .kml file)
+                        kml_files = [f for f in kmz_zip.namelist() if f.lower().endswith('.kml')]
+                        if kml_files:
+                            kml_content = kmz_zip.read(kml_files[0])
+                        else:
+                            return None, None, "No KML file found in KMZ archive"
+                except Exception as e:
+                    return None, None, f"Error extracting KMZ file: {str(e)}"
+            else:
+                kml_content = content
+            
+            # Write to temporary file for geopandas
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.kml', mode='wb') as tmp_file:
+                if isinstance(kml_content, bytes):
+                    tmp_file.write(kml_content)
+                else:
+                    tmp_file.write(kml_content.encode('utf-8'))
+                tmp_kml_path = tmp_file.name
+            
+            try:
+                gdf = gpd.read_file(tmp_kml_path, driver='KML')
+                crs = gdf.crs if gdf.crs else "EPSG:4326"  # KML is typically WGS84
+                return gdf, crs, None
+            except Exception as e:
+                return None, None, f"Error reading KML/KMZ file: {str(e)}"
+        
+        elif filename.endswith(('.geojson', '.json')):
+            # GeoJSON file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.geojson', mode='wb') as tmp_file:
+                tmp_file.write(uploaded_file.read())
+                tmp_geojson_path = tmp_file.name
+            
+            gdf = gpd.read_file(tmp_geojson_path)
+            crs = gdf.crs if gdf.crs else "EPSG:4326"  # GeoJSON is typically WGS84
+            return gdf, crs, None
+        
+        else:
+            return None, None, "Unsupported file format. Please upload Shapefile (.zip), KML (.kml), KMZ (.kmz), or GeoJSON (.geojson)"
+    
+    except Exception as e:
+        return None, None, f"Error processing vector file: {str(e)}"
 
 def export_line_to_shapefile(coords_latlon, line_crs=None):
     """Export line coordinates to Shapefile ZIP format."""
@@ -915,7 +1144,7 @@ if "uploaded_profile_coords" not in st.session_state:
 if "uploaded_profile_crs" not in st.session_state:
     st.session_state.uploaded_profile_crs = None
 if "data_source" not in st.session_state:
-    st.session_state.data_source = "folder"  # Default to folder
+    st.session_state.data_source = "upload"  # Default to upload
 if "auto_loaded_profile" not in st.session_state:
     st.session_state.auto_loaded_profile = False
 if "design_mode" not in st.session_state:
@@ -936,25 +1165,36 @@ if "basin_modified_dem" not in st.session_state:
     st.session_state.basin_modified_dem = None
 if "basin_volumes" not in st.session_state:
     st.session_state.basin_volumes = {"volume": 0, "inner_area": 0, "outer_area": 0}
+if "contour_gdf" not in st.session_state:
+    st.session_state.contour_gdf = None  # GeoDataFrame for contours
+if "contour_crs" not in st.session_state:
+    st.session_state.contour_crs = None  # CRS for contours
+if "contour_symbology" not in st.session_state:
+    st.session_state.contour_symbology = {
+        "color": "#000000",
+        "weight": 1,
+        "opacity": 0.6,
+        "show_labels": True,
+        "label_field": "",  # Selected attribute field for labels
+        "label_font_size": 10,
+        "label_font_weight": "normal",
+        "label_color": "#000000",
+        "label_opacity": 1.0,  # Label text opacity
+        "label_bg_opacity": 0.7,  # Label background/halo opacity
+        "label_spacing": 200,  # Distance in meters between labels along contour line
+        "major_interval": 5,  # Major contour interval (e.g., every 5m)
+        "major_weight": 2,  # Weight for major contours (thicker)
+        "minor_weight": 1  # Weight for minor contours (thinner)
+    }
+if "vector_layers" not in st.session_state:
+    st.session_state.vector_layers = []  # List of dicts: {id, name, gdf, crs, geom_type, symbology, visible}
+if "map_bounds" not in st.session_state:
+    st.session_state.map_bounds = None  # Store map bounds for persistence across tabs
+if "map_center" not in st.session_state:
+    st.session_state.map_center = None  # Store map center for persistence across tabs
 
-# Data Source and Design Mode Selection - Modern Card Layout
-st.markdown("## ⚙️ Project Setup")
-
-col_ds, col_dm = st.columns(2, gap="large")
-
-with col_ds:
-    with st.container(border=True):
-        st.markdown("#### 📊 Data Source")
-        data_source = st.radio(
-            "",
-            ["Upload Files", "Use Data Folder"],
-            index=0 if st.session_state.data_source == "upload" else 1,
-            key="data_source_radio",
-            horizontal=False,
-            help="Choose where to load DEM and profile data from"
-        )
-        st.session_state.data_source = "upload" if data_source == "Upload Files" else "folder"
-        st.caption("Load from upload dialog or Data/ folder")
+# Design Mode and Data Source Selection - Simplified Layout
+col_dm, col_ds = st.columns(2, gap="large")
 
 with col_dm:
     with st.container(border=True):
@@ -970,7 +1210,19 @@ with col_dm:
         st.session_state.design_mode = "profile" if design_mode == "Profile Line (Berm/Ditch)" else "basin"
         st.caption("Design linear berms or basin polygons")
 
-st.markdown("---")
+with col_ds:
+    with st.container(border=True):
+        st.markdown("#### 📊 Data Source")
+        data_source = st.radio(
+            "",
+            ["Upload Files", "Use Folder"],
+            index=0 if st.session_state.data_source == "upload" else 1,
+            key="data_source_radio",
+            horizontal=False,
+            help="Choose where to load DEM and profile data from"
+        )
+        st.session_state.data_source = "upload" if data_source == "Upload Files" else "folder"
+        st.caption("Load from upload dialog or Data/ folder")
 
 # File upload section (only show if "Upload Files" is selected)
 uploaded_dem = None
@@ -979,7 +1231,15 @@ uploaded_profile = None
 if st.session_state.data_source == "upload":
     st.markdown("## 📁 Upload Data Files")
     
-    col_dem, col_prof = st.columns(2, gap="large")
+    # Dynamic column layout based on design mode
+    if st.session_state.design_mode == "profile":
+        # Profile Line mode: 4 columns (DEM, Profile Line, Contours, Vector Layers)
+        col_dem, col_prof, col_cont, col_vec = st.columns(4, gap="medium")
+        col_channel = None  # No channel profile in profile mode
+    else:
+        # Polygon Basin mode: 5 columns (DEM, Basin Polygon, Contours, Vector Layers, Channel Profile)
+        col_dem, col_poly, col_cont, col_vec, col_channel = st.columns(5, gap="medium")
+        col_prof = col_poly  # Reuse profile processing for polygon
     
     with col_dem:
         with st.container(border=True):
@@ -1017,13 +1277,18 @@ if st.session_state.data_source == "upload":
     
     with col_prof:
         with st.container(border=True):
-            st.markdown("#### Profile Line (Optional)")
-            st.caption("Shapefile .zip or KML • Max 200MB")
+            if st.session_state.design_mode == "profile":
+                st.markdown("#### Profile Line (Polyline)")
+                st.caption("Shapefile .zip, KML, KMZ • Max 200MB")
+            else:
+                st.markdown("#### Basin Polygon")
+                st.caption("Shapefile .zip, KML, KMZ • Max 200MB")
+            
             uploaded_profile = st.file_uploader(
-                "Upload Profile",
-                type=['zip', 'kml'],
+                "Upload Profile" if st.session_state.design_mode == "profile" else "Upload Polygon",
+                type=['zip', 'kml', 'kmz'],
                 key="profile_uploader",
-                help="Upload profile as Shapefile or KML",
+                help="Upload profile/polygon as Shapefile, KML, or KMZ",
                 label_visibility="collapsed"
             )
             
@@ -1031,151 +1296,458 @@ if st.session_state.data_source == "upload":
                 if uploaded_profile.size > 200 * 1024 * 1024:  # 200MB
                     st.error("File size exceeds 200MB limit")
                 else:
-                    with st.spinner("Processing uploaded profile..."):
-                        if uploaded_profile.name.lower().endswith('.zip'):
-                            coords = process_uploaded_shapefile(uploaded_profile)
-                        elif uploaded_profile.name.lower().endswith('.kml'):
-                            coords = process_uploaded_kml(uploaded_profile)
-                        else:
-                            coords = None
-                        
-                        if coords:
-                            # Store coordinates and CRS info if available
-                            if isinstance(coords, tuple) and len(coords) == 2:
-                                # Shapefile with CRS info
-                                st.session_state.uploaded_profile_coords = coords[0]
-                                st.session_state.uploaded_profile_crs = coords[1]
+                    with st.spinner(f"Processing uploaded {('profile' if st.session_state.design_mode == 'profile' else 'polygon')}..."):
+                        if st.session_state.design_mode == "profile":
+                            # Process as line
+                            if uploaded_profile.name.lower().endswith('.zip'):
+                                coords = process_uploaded_shapefile(uploaded_profile)
+                            elif uploaded_profile.name.lower().endswith(('.kml', '.kmz')):
+                                coords = process_uploaded_kml(uploaded_profile)
                             else:
-                                # KML (already in lat/lon) or shapefile without CRS
-                                st.session_state.uploaded_profile_coords = coords
-                                st.session_state.uploaded_profile_crs = None
-                            st.success(f"✅ {uploaded_profile.name}")
-                            # Mark that profile was just uploaded so it gets processed
-                            st.session_state.profile_just_uploaded = True
+                                coords = None
+                            
+                            if coords:
+                                # Store coordinates and CRS info if available
+                                if isinstance(coords, tuple) and len(coords) == 2:
+                                    # Shapefile with CRS info
+                                    st.session_state.uploaded_profile_coords = coords[0]
+                                    st.session_state.uploaded_profile_crs = coords[1]
+                                else:
+                                    # KML (already in lat/lon) or shapefile without CRS
+                                    st.session_state.uploaded_profile_coords = coords
+                                    st.session_state.uploaded_profile_crs = None
+                                st.success(f"✅ {uploaded_profile.name}")
+                                # Mark that profile was just uploaded so it gets processed
+                                st.session_state.profile_just_uploaded = True
+                            else:
+                                st.error("Failed to extract profile from file")
                         else:
-                            st.error("Failed to extract profile from file")
+                            # Process as polygon (Basin mode)
+                            if uploaded_profile.name.lower().endswith('.zip'):
+                                poly_result = process_uploaded_polygon_shapefile(uploaded_profile)
+                            elif uploaded_profile.name.lower().endswith(('.kml', '.kmz')):
+                                poly_result = process_uploaded_polygon_kml(uploaded_profile)
+                            else:
+                                poly_result = None
+                            
+                            if poly_result:
+                                # Store polygon coordinates and CRS info if available
+                                if isinstance(poly_result, tuple) and len(poly_result) == 2:
+                                    # Shapefile with CRS info - attempt to convert to lat/lon (EPSG:4326)
+                                    poly_coords, poly_crs = poly_result
+                                    try:
+                                        if poly_crs is not None and not CRS(poly_crs).is_geographic:
+                                            transformer_poly = Transformer.from_crs(poly_crs, "EPSG:4326", always_xy=True)
+                                            converted = []
+                                            for coord in poly_coords:
+                                                if isinstance(coord, (list, tuple)) and len(coord) >= 2:
+                                                    x, y = coord[0], coord[1]
+                                                    lon, lat = transformer_poly.transform(x, y)
+                                                    converted.append([lon, lat])
+                                            if converted:
+                                                st.session_state.basin_polygon_coords = converted
+                                            else:
+                                                st.session_state.basin_polygon_coords = [[c[0], c[1]] if isinstance(c, (list, tuple)) else c for c in poly_coords]
+                                        else:
+                                            # CRS is geographic or unknown - assume already lon/lat
+                                            st.session_state.basin_polygon_coords = [[c[0], c[1]] if isinstance(c, (list, tuple)) else c for c in poly_coords]
+                                        st.session_state.basin_polygon_crs = poly_crs
+                                        st.success(f"✅ {uploaded_profile.name}")
+                                    except Exception as e:
+                                        # Fallback: store raw coords but warn user
+                                        st.session_state.basin_polygon_coords = [[c[0], c[1]] if isinstance(c, (list, tuple)) else c for c in poly_coords]
+                                        st.session_state.basin_polygon_crs = poly_crs
+                                        st.warning(f"Basin polygon loaded but coordinate transform to EPSG:4326 failed: {e}. Display may be incorrect.")
+                                else:
+                                    # KML (already in lat/lon)
+                                    st.session_state.basin_polygon_coords = poly_result
+                                    st.session_state.basin_polygon_crs = None
+                                    st.success(f"✅ Basin polygon loaded: {uploaded_profile.name}")
+                                # Clear any previous basin modified dem
+                                st.session_state.basin_modified_dem = None
+                            else:
+                                st.error("Failed to extract polygon from uploaded file")
+    
+    # Contours Upload Section (visualization only)
+    if col_cont is not None:
+        with col_cont:
+            with st.container(border=True):
+                st.markdown("#### 📊 Contours (Optional)")
+                st.caption("Shapefile .zip, KML, KMZ • Max 200MB")
+                uploaded_contours = st.file_uploader(
+                    "Upload Contours",
+                    type=['zip', 'kml', 'kmz'],
+                    key="contour_uploader",
+                    help="Upload contour shapefile, KML, or KMZ (visualization only)",
+                    label_visibility="collapsed"
+                )
+                
+                if uploaded_contours is not None:
+                    if uploaded_contours.size > 200 * 1024 * 1024:  # 200MB
+                        st.error("File size exceeds 200MB limit")
+                    else:
+                        with st.spinner("Processing uploaded contours..."):
+                            result = process_uploaded_contours(uploaded_contours)
+                            if result and isinstance(result, tuple) and len(result) == 2:
+                                gdf, crs = result
+                                if gdf is not None:
+                                    st.session_state.contour_gdf = gdf
+                                    st.session_state.contour_crs = crs
+                                    # Auto-select elevation field if available
+                                    elevation_attr = None
+                                    # First priority: Contour, Elev, ELEV (case-insensitive)
+                                    preferred_fields = ['Contour', 'Elev', 'ELEV', 'CONTOUR', 'ELEVATION', 'ELEV_M', 'ELEVATION_M']
+                                    for attr_name in preferred_fields:
+                                        matching_cols = [col for col in gdf.columns if col.upper() == attr_name.upper()]
+                                        if matching_cols:
+                                            elevation_attr = matching_cols[0]
+                                            break
+                                    if elevation_attr:
+                                        st.session_state.contour_symbology["label_field"] = elevation_attr
+                                    st.success(f"✅ {uploaded_contours.name} - {len(gdf)} contours loaded")
+                                else:
+                                    st.error(f"❌ {crs}")  # crs contains error message
+                            else:
+                                st.error("Failed to process contour file")
+                
+                # Contour Symbology Settings (compact version)
+                if st.session_state.contour_gdf is not None:
+                    with st.expander("🎨 Symbology", expanded=False):
+                        contour_opacity = st.slider(
+                            "Layer Opacity",
+                            min_value=0.0,
+                            max_value=1.0,
+                            value=st.session_state.contour_symbology["opacity"],
+                            step=0.1,
+                            key="contour_opacity_slider"
+                        )
+                        show_labels = st.checkbox(
+                            "Show Labels",
+                            value=st.session_state.contour_symbology["show_labels"],
+                            key="contour_show_labels"
+                        )
+                        
+                        if show_labels:
+                            contour_gdf = st.session_state.contour_gdf
+                            numeric_fields = [col for col in contour_gdf.columns if col != 'geometry' and pd.api.types.is_numeric_dtype(contour_gdf[col])]
+                            all_fields = [''] + numeric_fields
+                            
+                            current_field_idx = 0
+                            if st.session_state.contour_symbology.get("label_field") in all_fields:
+                                current_field_idx = all_fields.index(st.session_state.contour_symbology["label_field"])
+                            
+                            label_field = st.selectbox(
+                                "Label Field",
+                                options=all_fields,
+                                index=current_field_idx,
+                                key="contour_label_field"
+                            )
+                            
+                            col_lab1, col_lab2 = st.columns(2)
+                            with col_lab1:
+                                label_font_size = st.slider(
+                                    "Label Size",
+                                    min_value=8,
+                                    max_value=24,
+                                    value=st.session_state.contour_symbology.get("label_font_size", 10),
+                                    step=1,
+                                    key="contour_label_font_size"
+                                )
+                            with col_lab2:
+                                label_opacity = st.slider(
+                                    "Label Opacity",
+                                    min_value=0.0,
+                                    max_value=1.0,
+                                    value=st.session_state.contour_symbology.get("label_opacity", 1.0),
+                                    step=0.1,
+                                    key="contour_label_opacity"
+                                )
+                            
+                            label_bg_opacity = st.slider(
+                                "Label Background",
+                                min_value=0.0,
+                                max_value=1.0,
+                                value=st.session_state.contour_symbology.get("label_bg_opacity", 0.7),
+                                step=0.1,
+                                key="contour_label_bg_opacity",
+                                help="Opacity of the label background/halo"
+                            )
+                        else:
+                            label_field = st.session_state.contour_symbology.get("label_field", "")
+                            label_font_size = st.session_state.contour_symbology.get("label_font_size", 10)
+                            label_opacity = st.session_state.contour_symbology.get("label_opacity", 1.0)
+                            label_bg_opacity = st.session_state.contour_symbology.get("label_bg_opacity", 0.7)
+                        
+                        # Index Contour Settings
+                        st.markdown("**Index Contours**")
+                        major_interval = st.number_input(
+                            "Index Interval",
+                            min_value=1,
+                            max_value=100,
+                            value=st.session_state.contour_symbology.get("major_interval", 5),
+                            step=1,
+                            key="contour_major_interval",
+                            help="Every Nth contour will be emphasized (default: 5)"
+                        )
+                        
+                        # Update session state
+                        st.session_state.contour_symbology["opacity"] = contour_opacity
+                        st.session_state.contour_symbology["show_labels"] = show_labels
+                        st.session_state.contour_symbology["label_field"] = label_field
+                        st.session_state.contour_symbology["label_font_size"] = label_font_size
+                        st.session_state.contour_symbology["label_opacity"] = label_opacity
+                        st.session_state.contour_symbology["label_bg_opacity"] = label_bg_opacity
+                        st.session_state.contour_symbology["major_interval"] = major_interval
+                    
+                    # Remove contours button
+                    if st.button("❌ Remove Contours", key="remove_contours_btn", use_container_width=True):
+                        st.session_state.contour_gdf = None
+                        st.session_state.contour_crs = None
+                        # Reset symbology to defaults
+                        st.session_state.contour_symbology = {
+                            "color": "#000000",
+                            "weight": 1,
+                            "opacity": 0.6,
+                            "show_labels": True,
+                            "label_field": "",
+                            "label_font_size": 10,
+                            "label_font_weight": "normal",
+                            "label_color": "#000000",
+                            "label_opacity": 1.0,
+                            "label_bg_opacity": 0.7,
+                            "label_spacing": 200,
+                            "major_interval": 5,
+                            "major_weight": 2,
+                            "minor_weight": 1
+                        }
+                        st.rerun()
+    
+    # Vector Layers Upload Section (visualization only)
+    if col_vec is not None:
+        with col_vec:
+            with st.container(border=True):
+                st.markdown("#### 🗺️ Vector Layers (Optional)")
+                st.caption("Shapefile .zip, KML, GeoJSON • Max 200MB")
+                
+                uploaded_vector = st.file_uploader(
+                    "Upload Vector File",
+                    type=['zip', 'kml', 'kmz', 'geojson', 'json'],
+                    key="vector_uploader",
+                    help="Upload Shapefile (.zip), KML, or GeoJSON (visualization only)",
+                    label_visibility="collapsed"
+                )
+                
+                if uploaded_vector is not None:
+                    if uploaded_vector.size > 200 * 1024 * 1024:  # 200MB
+                        st.error("File size exceeds 200MB limit")
+                    else:
+                        uploaded_filename = uploaded_vector.name if uploaded_vector.name else "vector_layer.zip"
+                        file_key = f"vector_file_processed_{uploaded_filename}_{uploaded_vector.size}"
+                        
+                        if file_key not in st.session_state:
+                            existing_layer = None
+                            for existing in st.session_state.vector_layers:
+                                if existing.get('name') == uploaded_filename:
+                                    existing_layer = existing
+                                    break
+                            
+                            if existing_layer is not None:
+                                st.warning(f"⚠️ Layer '{uploaded_filename}' already exists.")
+                            else:
+                                with st.spinner("Processing uploaded vector file..."):
+                                    gdf, crs, error_msg = process_uploaded_vector_file(uploaded_vector)
+                                    
+                                    if gdf is not None and error_msg is None:
+                                        geom_types = gdf.geometry.geom_type.unique()
+                                        geom_type = geom_types[0] if len(geom_types) == 1 else "Mixed"
+                                        
+                                        import uuid
+                                        layer_id = str(uuid.uuid4())[:8]
+                                        layer_name = uploaded_filename
+                                        
+                                        # Default symbology with label support
+                                        default_symbology = {
+                                            "color": "#000000",
+                                            "weight": 1,
+                                            "opacity": 0.8,
+                                            "show_labels": False,
+                                            "label_field": "",
+                                            "label_font_size": 10,
+                                            "label_opacity": 1.0,
+                                            "label_bg_opacity": 0.7,
+                                            "label_placement": "auto"  # For polygons: auto, centroid, polylabel, center
+                                        }
+                                        
+                                        new_layer = {
+                                            "id": layer_id,
+                                            "name": layer_name,
+                                            "gdf": gdf,
+                                            "crs": crs,
+                                            "geom_type": geom_type,
+                                            "symbology": default_symbology,
+                                            "visible": True
+                                        }
+                                        st.session_state.vector_layers.append(new_layer)
+                                        st.session_state[file_key] = True
+                                        st.success(f"✅ {layer_name} loaded - {len(gdf)} features ({geom_type})")
+                                    else:
+                                        st.error(f"❌ {error_msg}")
+                
+                # Display existing layers
+                if st.session_state.vector_layers:
+                    with st.expander("📋 Manage Layers", expanded=False):
+                        for layer in st.session_state.vector_layers:
+                            st.markdown(f"**{layer['name']}** ({layer['geom_type']})")
+                            
+                            # Symbology controls for each layer
+                            layer_key = layer['id']
+                            
+                            col_v1, col_v2 = st.columns(2)
+                            with col_v1:
+                                layer_opacity = st.slider(
+                                    "Layer Opacity",
+                                    min_value=0.0,
+                                    max_value=1.0,
+                                    value=layer['symbology'].get("opacity", 0.8),
+                                    step=0.1,
+                                    key=f"vec_opacity_{layer_key}"
+                                )
+                                layer['symbology']["opacity"] = layer_opacity
+                            
+                            with col_v2:
+                                show_layer_labels = st.checkbox(
+                                    "Show Labels",
+                                    value=layer['symbology'].get("show_labels", False),
+                                    key=f"vec_show_labels_{layer_key}"
+                                )
+                                layer['symbology']["show_labels"] = show_layer_labels
+                            
+                            if show_layer_labels:
+                                # Get available fields
+                                layer_gdf = layer['gdf']
+                                text_fields = [col for col in layer_gdf.columns if col != 'geometry' and layer_gdf[col].dtype == 'object']
+                                numeric_fields = [col for col in layer_gdf.columns if col != 'geometry' and pd.api.types.is_numeric_dtype(layer_gdf[col])]
+                                all_layer_fields = [''] + text_fields + numeric_fields
+                                
+                                current_label_idx = 0
+                                if layer['symbology'].get("label_field") in all_layer_fields:
+                                    current_label_idx = all_layer_fields.index(layer['symbology']["label_field"])
+                                
+                                layer_label_field = st.selectbox(
+                                    "Label Field",
+                                    options=all_layer_fields,
+                                    index=current_label_idx,
+                                    key=f"vec_label_field_{layer_key}"
+                                )
+                                layer['symbology']["label_field"] = layer_label_field
+                                
+                                col_vl1, col_vl2 = st.columns(2)
+                                with col_vl1:
+                                    layer_label_size = st.slider(
+                                        "Label Size",
+                                        min_value=8,
+                                        max_value=24,
+                                        value=layer['symbology'].get("label_font_size", 10),
+                                        step=1,
+                                        key=f"vec_label_size_{layer_key}"
+                                    )
+                                    layer['symbology']["label_font_size"] = layer_label_size
+                                
+                                with col_vl2:
+                                    layer_label_opacity = st.slider(
+                                        "Label Opacity",
+                                        min_value=0.0,
+                                        max_value=1.0,
+                                        value=layer['symbology'].get("label_opacity", 1.0),
+                                        step=0.1,
+                                        key=f"vec_label_opacity_{layer_key}"
+                                    )
+                                    layer['symbology']["label_opacity"] = layer_label_opacity
+                                                
+                                    layer_label_bg_opacity = st.slider(
+                                        "Label Background",
+                                        min_value=0.0,
+                                        max_value=1.0,
+                                        value=layer['symbology'].get("label_bg_opacity", 0.7),
+                                        step=0.1,
+                                        key=f"vec_label_bg_opacity_{layer_key}",
+                                        help="Opacity of the label background/halo"
+                                    )
+                                    layer['symbology']["label_bg_opacity"] = layer_label_bg_opacity
+                                
+                                # Polygon-specific label placement
+                                if layer['geom_type'] in ['Polygon', 'MultiPolygon']:
+                                    label_placement = st.selectbox(
+                                        "Label Placement",
+                                        options=["auto", "centroid", "center"],
+                                        index=0 if layer['symbology'].get("label_placement", "auto") == "auto" else 
+                                              (1 if layer['symbology'].get("label_placement") == "centroid" else 2),
+                                        key=f"vec_label_placement_{layer_key}",
+                                        help="auto: best position, centroid: geometric center, center: bounding box center"
+                                    )
+                                    layer['symbology']["label_placement"] = label_placement
+                            
+                            # Remove button
+                            if st.button("❌ Remove Layer", key=f"remove_{layer['id']}", use_container_width=True):
+                                st.session_state.vector_layers.remove(layer)
+                                st.rerun()
+                            
+                            st.markdown("---")
+    
+    # Channel Profile Upload (only in basin mode)
+    if col_channel is not None and st.session_state.design_mode == "basin":
+        with col_channel:
+            with st.container(border=True):
+                st.markdown("#### 📈 Channel Profile (Polyline)")
+                st.caption("Shapefile .zip, KML, KMZ • Max 200MB")
+                uploaded_channel = st.file_uploader(
+                    "Upload Channel Profile",
+                    type=['zip', 'kml', 'kmz'],
+                    key="channel_uploader",
+                    help="LineString from upstream to downstream for longitudinal slope",
+                    label_visibility="collapsed"
+                )
+                
+                if uploaded_channel is not None:
+                    if uploaded_channel.size > 200 * 1024 * 1024:  # 200MB
+                        st.error("File size exceeds 200MB limit")
+                    else:
+                        with st.spinner("Processing uploaded channel..."):
+                            if uploaded_channel.name.lower().endswith('.zip'):
+                                channel_result = process_uploaded_shapefile(uploaded_channel)
+                            elif uploaded_channel.name.lower().endswith(('.kml', '.kmz')):
+                                channel_result = process_uploaded_kml(uploaded_channel)
+                            else:
+                                channel_result = None
+                            
+                            if channel_result:
+                                # Store channel coordinates - convert to lat/lon if needed
+                                if isinstance(channel_result, tuple) and len(channel_result) == 2:
+                                    channel_coords, channel_crs = channel_result
+                                    if channel_crs is not None and not channel_crs.is_geographic:
+                                        try:
+                                            transformer = Transformer.from_crs(channel_crs, "EPSG:4326", always_xy=True)
+                                            converted_coords = []
+                                            for coord in channel_coords:
+                                                if isinstance(coord, (list, tuple)) and len(coord) >= 2:
+                                                    x, y = coord[0], coord[1]
+                                                    lon, lat = transformer.transform(x, y)
+                                                    converted_coords.append([lon, lat])
+                                            st.session_state.basin_channel_coords = converted_coords
+                                        except Exception as e:
+                                            st.warning(f"Could not convert CRS: {e}. Using coordinates as-is.")
+                                            st.session_state.basin_channel_coords = [[c[0], c[1]] if isinstance(c, (list, tuple)) else c for c in channel_coords]
+                                    else:
+                                        st.session_state.basin_channel_coords = [[c[0], c[1]] if isinstance(c, (list, tuple)) else c for c in channel_coords]
+                                else:
+                                    st.session_state.basin_channel_coords = [[c[0], c[1]] if isinstance(c, (list, tuple)) else c for c in channel_result]
+                                
+                                st.success(f"✅ Channel profile loaded: {uploaded_channel.name}")
+                                st.session_state.basin_modified_dem = None
+                            else:
+                                st.error("Failed to extract channel line from uploaded file")
     
     st.markdown("---")
-    
-    # Polygon Basin Upload (only in basin mode)
-    if st.session_state.design_mode == "basin":
-        st.markdown("## 🔷 Upload Basin Polygon (Optional)")
-        
-        with st.container(border=True):
-            st.caption("Shapefile .zip or KML • Max 200MB")
-            uploaded_polygon = st.file_uploader(
-                "Upload Polygon",
-                type=['zip', 'kml'],
-                key="polygon_uploader",
-                help="Upload polygon as Shapefile or KML",
-                label_visibility="collapsed"
-            )
-            
-            if uploaded_polygon is not None:
-                if uploaded_polygon.size > 200 * 1024 * 1024:  # 200MB
-                    st.error("File size exceeds 200MB limit")
-                else:
-                    with st.spinner("Processing uploaded polygon..."):
-                        if uploaded_polygon.name.lower().endswith('.zip'):
-                            poly_result = process_uploaded_polygon_shapefile(uploaded_polygon)
-                        elif uploaded_polygon.name.lower().endswith('.kml'):
-                            poly_result = process_uploaded_polygon_kml(uploaded_polygon)
-                        else:
-                            poly_result = None
-                        
-                        if poly_result:
-                            # Store polygon coordinates and CRS info if available
-                            if isinstance(poly_result, tuple) and len(poly_result) == 2:
-                                # Shapefile with CRS info - attempt to convert to lat/lon (EPSG:4326)
-                                poly_coords, poly_crs = poly_result
-                                try:
-                                    if poly_crs is not None and not CRS(poly_crs).is_geographic:
-                                        transformer_poly = Transformer.from_crs(poly_crs, "EPSG:4326", always_xy=True)
-                                        converted = []
-                                        for coord in poly_coords:
-                                            if isinstance(coord, (list, tuple)) and len(coord) >= 2:
-                                                x, y = coord[0], coord[1]
-                                                lon, lat = transformer_poly.transform(x, y)
-                                                converted.append([lon, lat])
-                                        if converted:
-                                            st.session_state.basin_polygon_coords = converted
-                                        else:
-                                            st.session_state.basin_polygon_coords = [[c[0], c[1]] if isinstance(c, (list, tuple)) else c for c in poly_coords]
-                                    else:
-                                        # CRS is geographic or unknown - assume already lon/lat
-                                        st.session_state.basin_polygon_coords = [[c[0], c[1]] if isinstance(c, (list, tuple)) else c for c in poly_coords]
-                                    st.session_state.basin_polygon_crs = poly_crs
-                                    st.success(f"✅ {uploaded_polygon.name}")
-                                except Exception as e:
-                                    # Fallback: store raw coords but warn user
-                                    st.session_state.basin_polygon_coords = [[c[0], c[1]] if isinstance(c, (list, tuple)) else c for c in poly_coords]
-                                    st.session_state.basin_polygon_crs = poly_crs
-                                st.warning(f"Basin polygon loaded but coordinate transform to EPSG:4326 failed: {e}. Display may be incorrect.")
-                        else:
-                            # KML (already in lat/lon)
-                            st.session_state.basin_polygon_coords = poly_result
-                            st.session_state.basin_polygon_crs = None
-                            st.success(f"✅ Basin polygon loaded: {uploaded_polygon.name}")
-                        # Clear any previous basin modified dem
-                        st.session_state.basin_modified_dem = None
-            else:
-                st.error("Failed to extract polygon from uploaded file")
-        
-        # Channel Profile Upload (for longitudinal slope)
-        st.markdown("**📈 Upload Channel Profile (Optional)**")
-        st.markdown("Upload Channel Line (Shapefile .zip or KML) for longitudinal slope definition " + "❓")
-        uploaded_channel = st.file_uploader(
-            "Drag and drop file here",
-            type=['zip', 'kml'],
-            key="channel_uploader",
-            help="Limit 200MB per file • ZIP, KML - LineString from upstream to downstream",
-            label_visibility="collapsed"
-        )
-        
-        if uploaded_channel is not None:
-            if uploaded_channel.size > 200 * 1024 * 1024:  # 200MB
-                st.error("File size exceeds 200MB limit")
-            else:
-                with st.spinner("Processing uploaded channel..."):
-                    if uploaded_channel.name.lower().endswith('.zip'):
-                        channel_result = process_uploaded_shapefile(uploaded_channel)
-                    elif uploaded_channel.name.lower().endswith('.kml'):
-                        channel_result = process_uploaded_kml(uploaded_channel)
-                    else:
-                        channel_result = None
-                    
-                    if channel_result:
-                        # Store channel coordinates - convert to lat/lon if needed
-                        if isinstance(channel_result, tuple) and len(channel_result) == 2:
-                            # Shapefile with CRS info - convert to lat/lon
-                            channel_coords, channel_crs = channel_result
-                            
-                            # Convert from shapefile CRS to lat/lon (EPSG:4326)
-                            if channel_crs is not None and not channel_crs.is_geographic:
-                                try:
-                                    transformer = Transformer.from_crs(channel_crs, "EPSG:4326", always_xy=True)
-                                    converted_coords = []
-                                    for coord in channel_coords:
-                                        if isinstance(coord, (list, tuple)) and len(coord) >= 2:
-                                            x, y = coord[0], coord[1]
-                                            lon, lat = transformer.transform(x, y)
-                                            converted_coords.append([lon, lat])
-                                    st.session_state.basin_channel_coords = converted_coords
-                                except Exception as e:
-                                    st.warning(f"Could not convert CRS: {e}. Using coordinates as-is.")
-                                    st.session_state.basin_channel_coords = [[c[0], c[1]] if isinstance(c, (list, tuple)) else c for c in channel_coords]
-                            else:
-                                # Already in lat/lon or unknown CRS
-                                st.session_state.basin_channel_coords = [[c[0], c[1]] if isinstance(c, (list, tuple)) else c for c in channel_coords]
-                        else:
-                            # KML (already in lat/lon)
-                            st.session_state.basin_channel_coords = [[c[0], c[1]] if isinstance(c, (list, tuple)) else c for c in channel_result]
-                        
-                        st.success(f"✅ Channel profile loaded: {uploaded_channel.name}")
-                        # Clear any previous basin modified dem
-                        st.session_state.basin_modified_dem = None
-                    else:
-                        st.error("Failed to extract channel line from uploaded file")
     
     if uploaded_dem is None and st.session_state.uploaded_dem_dataset is None:
         st.info("👆 Upload a DEM (GeoTIFF) to begin")
@@ -3033,7 +3605,7 @@ with tab1:
                 st.info("📍 **Polygon:** Draw boundary (blue)\n\n📍 **Channel:** Draw flow path (green)")
     
     with col_map:
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=14, prefer_canvas=True)
+        m = folium.Map(location=[center_lat, center_lon], zoom_start=14, max_zoom=22, prefer_canvas=True)
         
         folium.TileLayer(
             tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
@@ -3448,6 +4020,300 @@ with tab1:
                 # Basin will be visible but map stays at DEM extent for drawing
             except Exception as e:
                 st.warning(f"Error displaying basin polygon: {e}")
+        
+        # Display contours if loaded (visualization only)
+        if st.session_state.contour_gdf is not None:
+            try:
+                contour_gdf = st.session_state.contour_gdf
+                contour_symbology = st.session_state.contour_symbology
+                
+                # Transform contours to WGS84 for display if needed
+                if st.session_state.contour_crs and str(st.session_state.contour_crs) != "EPSG:4326":
+                    try:
+                        contour_gdf_display = contour_gdf.to_crs("EPSG:4326")
+                    except:
+                        contour_gdf_display = contour_gdf
+                else:
+                    contour_gdf_display = contour_gdf
+                
+                # Determine major/minor contours
+                major_interval = contour_symbology.get("major_interval", 5)
+                label_field = contour_symbology.get("label_field", "")
+                show_labels = contour_symbology.get("show_labels", True)
+                label_font_size = contour_symbology.get("label_font_size", 10)
+                label_opacity = contour_symbology.get("label_opacity", 1.0)
+                label_bg_opacity = contour_symbology.get("label_bg_opacity", 0.7)
+                
+                for idx, row in contour_gdf_display.iterrows():
+                    geom = row.geometry
+                    
+                    # Determine if this is a major contour
+                    is_major = False
+                    label_value = None
+                    if label_field and label_field in row and pd.api.types.is_numeric_dtype(type(row[label_field])):
+                        try:
+                            elev_value = float(row[label_field])
+                            label_value = elev_value
+                            if elev_value % major_interval == 0:
+                                is_major = True
+                        except:
+                            pass
+                    
+                    # Set weight based on major/minor
+                    weight = contour_symbology.get("major_weight", 2) if is_major else contour_symbology.get("minor_weight", 1)
+                    
+                    # Convert geometry to GeoJSON and add to map
+                    if geom.geom_type in ['LineString', 'MultiLineString']:
+                        coords = []
+                        if geom.geom_type == 'LineString':
+                            coords = [[lat, lon] for lon, lat in geom.coords]
+                        else:
+                            for line in geom.geoms:
+                                coords.extend([[lat, lon] for lon, lat in line.coords])
+                        
+                        if coords:
+                            # Add the contour line
+                            folium.PolyLine(
+                                locations=coords,
+                                color=contour_symbology.get("color", "#000000"),
+                                weight=weight,
+                                opacity=contour_symbology.get("opacity", 0.6)
+                            ).add_to(m)
+                            
+                            # Add labels as DivIcon markers on major (index) contours
+                            if show_labels and is_major and label_value is not None:
+                                # Place 1-3 labels per contour line for clean cartographic appearance
+                                # Limit to max 3 labels per contour to avoid crowding
+                                max_labels_per_contour = 3
+                                
+                                # Calculate optimal spacing based on line length
+                                if len(coords) < 20:
+                                    # Short contour - 1 label
+                                    num_labels = 1
+                                elif len(coords) < 50:
+                                    # Medium contour - 1-2 labels
+                                    num_labels = min(2, max_labels_per_contour)
+                                else:
+                                    # Long contour - 2-3 labels
+                                    num_labels = min(max(2, len(coords) // 100), max_labels_per_contour)
+                                
+                                step = max(1, len(coords) // (num_labels + 1))  # Distribute evenly
+                                
+                                for label_idx in range(1, num_labels + 1):
+                                    i = label_idx * step
+                                    if i < len(coords):
+                                        lat, lon = coords[i]
+                                        
+                                        # Calculate angle of the line at this point for text rotation
+                                        angle = 0
+                                        if i + 1 < len(coords):
+                                            lat2, lon2 = coords[i + 1]
+                                            angle = np.degrees(np.arctan2(lat2 - lat, lon2 - lon))
+                                        
+                                        # Create styled label with background
+                                        label_html = f"""
+                                        <div style="
+                                            display: inline-block;
+                                            font-size: {label_font_size}px;
+                                            font-weight: bold;
+                                            color: rgba(0, 0, 0, {label_opacity});
+                                            background-color: rgba(255, 255, 255, {label_bg_opacity});
+                                            padding: 2px 4px;
+                                            border-radius: 3px;
+                                            border: 1px solid rgba(0, 0, 0, 0.3);
+                                            white-space: nowrap;
+                                            transform: rotate({angle}deg);
+                                            transform-origin: center;
+                                        ">{int(label_value) if label_value == int(label_value) else label_value}</div>
+                                        """
+                                        
+                                        folium.Marker(
+                                            location=[lat, lon],
+                                            icon=folium.DivIcon(html=label_html)
+                                        ).add_to(m)
+            except Exception as e:
+                st.warning(f"Error displaying contours: {e}")
+        
+        # Display vector layers if loaded (visualization only)
+        if st.session_state.vector_layers:
+            for layer in st.session_state.vector_layers:
+                if not layer.get("visible", True):
+                    continue
+                
+                try:
+                    layer_gdf = layer["gdf"]
+                    layer_symbology = layer["symbology"]
+                    
+                    # Transform to WGS84 for display if needed
+                    if layer["crs"] and str(layer["crs"]) != "EPSG:4326":
+                        try:
+                            layer_gdf_display = layer_gdf.to_crs("EPSG:4326")
+                        except:
+                            layer_gdf_display = layer_gdf
+                    else:
+                        layer_gdf_display = layer_gdf
+                    
+                    show_labels = layer_symbology.get("show_labels", False)
+                    label_field = layer_symbology.get("label_field", "")
+                    label_font_size = layer_symbology.get("label_font_size", 10)
+                    label_opacity = layer_symbology.get("label_opacity", 1.0)
+                    label_bg_opacity = layer_symbology.get("label_bg_opacity", 0.7)
+                    label_placement = layer_symbology.get("label_placement", "auto")
+                    
+                    for idx, row in layer_gdf_display.iterrows():
+                        geom = row.geometry
+                        
+                        # Get label value if labels are enabled
+                        label_value = None
+                        if show_labels and label_field and label_field in row:
+                            label_value = row[label_field]
+                        
+                        # Add geometry to map based on type
+                        if geom.geom_type in ['Point', 'MultiPoint']:
+                            if geom.geom_type == 'Point':
+                                points = [geom]
+                            else:
+                                points = geom.geoms
+                            
+                            for point in points:
+                                folium.CircleMarker(
+                                    location=[point.y, point.x],
+                                    radius=layer_symbology.get("radius", 5),
+                                    color=layer_symbology.get("color", "#000000"),
+                                    weight=layer_symbology.get("weight", 1),
+                                    fill=True,
+                                    fillColor=layer_symbology.get("fill_color", "#000000"),
+                                    fillOpacity=layer_symbology.get("fill_opacity", 0.8)
+                                ).add_to(m)
+                                
+                                # Add label as DivIcon marker for points
+                                if label_value is not None:
+                                    label_html = f"""
+                                    <div style="
+                                        display: inline-block;
+                                        font-size: {label_font_size}px;
+                                        font-weight: 600;
+                                        color: rgba(0, 0, 0, {label_opacity});
+                                        background-color: rgba(255, 255, 255, {label_bg_opacity});
+                                        padding: 2px 6px;
+                                        border-radius: 3px;
+                                        border: 1px solid rgba(0, 0, 0, 0.3);
+                                        white-space: nowrap;
+                                        margin-left: 10px;
+                                    ">{label_value}</div>
+                                    """
+                                    folium.Marker(
+                                        location=[point.y, point.x],
+                                        icon=folium.DivIcon(html=label_html)
+                                    ).add_to(m)
+                        
+                        elif geom.geom_type in ['LineString', 'MultiLineString']:
+                            coords = []
+                            if geom.geom_type == 'LineString':
+                                coords = [[lat, lon] for lon, lat in geom.coords]
+                            else:
+                                for line in geom.geoms:
+                                    coords.extend([[lat, lon] for lon, lat in line.coords])
+                            
+                            if coords:
+                                # Add the line
+                                folium.PolyLine(
+                                    locations=coords,
+                                    color=layer_symbology.get("color", "#000000"),
+                                    weight=layer_symbology.get("weight", 1),
+                                    opacity=layer_symbology.get("opacity", 0.8)
+                                ).add_to(m)
+                                
+                                # Add labels at intervals along the line
+                                if label_value is not None:
+                                    num_labels = max(1, len(coords) // 15)  # One label per ~15 points
+                                    step = max(1, len(coords) // num_labels)
+                                    
+                                    for i in range(0, len(coords), step):
+                                        if i < len(coords):
+                                            lat, lon = coords[i]
+                                            
+                                            # Calculate angle for text rotation
+                                            angle = 0
+                                            if i + 1 < len(coords):
+                                                lat2, lon2 = coords[i + 1]
+                                                angle = np.degrees(np.arctan2(lat2 - lat, lon2 - lon))
+                                            
+                                            label_html = f"""
+                                            <div style="
+                                                display: inline-block;
+                                                font-size: {label_font_size}px;
+                                                font-weight: 600;
+                                                color: rgba(0, 0, 0, {label_opacity});
+                                                background-color: rgba(255, 255, 255, {label_bg_opacity});
+                                                padding: 2px 6px;
+                                                border-radius: 3px;
+                                                border: 1px solid rgba(0, 0, 0, 0.3);
+                                                white-space: nowrap;
+                                                transform: rotate({angle}deg);
+                                                transform-origin: center;
+                                            ">{label_value}</div>
+                                            """
+                                            
+                                            folium.Marker(
+                                                location=[lat, lon],
+                                                icon=folium.DivIcon(html=label_html)
+                                            ).add_to(m)
+                        
+                        elif geom.geom_type in ['Polygon', 'MultiPolygon']:
+                            if geom.geom_type == 'Polygon':
+                                polygons = [geom]
+                            else:
+                                polygons = geom.geoms
+                            
+                            for poly in polygons:
+                                coords = [[lat, lon] for lon, lat in poly.exterior.coords]
+                                folium.Polygon(
+                                    locations=coords,
+                                    color=layer_symbology.get("color", "#000000"),
+                                    weight=layer_symbology.get("weight", 1),
+                                    fill=True,
+                                    fillColor=layer_symbology.get("fill_color", "#000000"),
+                                    fillOpacity=layer_symbology.get("fill_opacity", 0.0),
+                                    opacity=layer_symbology.get("opacity", 0.8)
+                                ).add_to(m)
+                                
+                                # Add label for polygon based on placement setting
+                                if label_value is not None:
+                                    label_lat, label_lon = None, None
+                                    
+                                    if label_placement == "centroid":
+                                        centroid = poly.centroid
+                                        label_lat, label_lon = centroid.y, centroid.x
+                                    elif label_placement == "center":
+                                        bounds = poly.bounds  # (minx, miny, maxx, maxy)
+                                        label_lon = (bounds[0] + bounds[2]) / 2
+                                        label_lat = (bounds[1] + bounds[3]) / 2
+                                    else:  # "auto" - use centroid by default
+                                        centroid = poly.centroid
+                                        label_lat, label_lon = centroid.y, centroid.x
+                                    
+                                    if label_lat is not None and label_lon is not None:
+                                        label_html = f"""
+                                        <div style="
+                                            display: inline-block;
+                                            font-size: {label_font_size}px;
+                                            font-weight: 600;
+                                            color: rgba(0, 0, 0, {label_opacity});
+                                            background-color: rgba(255, 255, 255, {label_bg_opacity});
+                                            padding: 3px 8px;
+                                            border-radius: 3px;
+                                            border: 1px solid rgba(0, 0, 0, 0.3);
+                                            white-space: nowrap;
+                                        ">{label_value}</div>
+                                        """
+                                        
+                                        folium.Marker(
+                                            location=[label_lat, label_lon],
+                                            icon=folium.DivIcon(html=label_html)
+                                        ).add_to(m)
+                except Exception as e:
+                    st.warning(f"Error displaying layer {layer['name']}: {e}")
         
         # Also display channel line independently (even if no basin polygon drawn yet)
         # This ensures polyline persists after first draw
@@ -6860,6 +7726,7 @@ UNCERTAINTY ANALYSIS (Resolution Sensitivity):
             m_basin = folium.Map(
                 location=[center_lat, center_lon],
                 zoom_start=15,  # Initial zoom, will be adjusted by fit_bounds
+                max_zoom=22,
                 control_scale=True
             )
             
