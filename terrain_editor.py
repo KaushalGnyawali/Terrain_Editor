@@ -4907,7 +4907,7 @@ with _tab3:
     # Influence width
     col_iw, col_info_btn = st.columns([3, 1])
     with col_iw:
-        influence_width = st.number_input("Influence Width (m)", 5.0, 50.0, 12.0, 1.0, key="infl_xs",
+        influence_width = st.number_input("Influence Width (m)", 0.1, 50.0, 12.0, 1.0, key="infl_xs",
                                          help="Perpendicular distance from profile centreline for modification",
                                          on_change=on_template_param_change)
     
@@ -5345,12 +5345,15 @@ Perpendicular distance from profile centreline where terrain modification applie
         if template_type_xs == "berm_ditch":
             try:
                 template_params_xs = st.session_state.get("template_params", {})
+                influence_width_xs = st.session_state.get("influence_width", 12.0)
                 tangents_xs, normals_xs = compute_tangents_normals(samples)
                 berm_top_left, berm_top_right, ditch_bottom_left, ditch_bottom_right = get_berm_ditch_boundaries(template_params_xs)
                 berm_top_left_coords = []
                 berm_top_right_coords = []
                 ditch_bottom_left_coords = []
                 ditch_bottom_right_coords = []
+                influence_left_coords = []
+                influence_right_coords = []
                 for station_idx in range(len(stations)):
                     xc, yc = center_xy[station_idx]
                     nx, ny = normals_xs[station_idx]
@@ -5370,6 +5373,15 @@ Perpendicular distance from profile centreline where terrain modification applie
                     y_dbr = yc + ditch_bottom_right * ny
                     lon_dbr, lat_dbr = transformer_to_map.transform(x_dbr, y_dbr)
                     ditch_bottom_right_coords.append([lat_dbr, lon_dbr])
+                    # Influence width boundaries
+                    x_il = xc - influence_width_xs * nx
+                    y_il = yc - influence_width_xs * ny
+                    lon_il, lat_il = transformer_to_map.transform(x_il, y_il)
+                    influence_left_coords.append([lat_il, lon_il])
+                    x_ir = xc + influence_width_xs * nx
+                    y_ir = yc + influence_width_xs * ny
+                    lon_ir, lat_ir = transformer_to_map.transform(x_ir, y_ir)
+                    influence_right_coords.append([lat_ir, lon_ir])
                 folium.PolyLine(
                     locations=berm_top_left_coords,
                     color='#4169E1', weight=2, opacity=0.6, dash_array='5, 5',
@@ -5389,6 +5401,17 @@ Perpendicular distance from profile centreline where terrain modification applie
                     locations=ditch_bottom_right_coords,
                     color='#FF8C00', weight=2, opacity=0.6, dash_array='5, 5',
                     tooltip='Ditch Bottom Right Edge'
+                ).add_to(m_xs)
+                # Add influence width boundaries
+                folium.PolyLine(
+                    locations=influence_left_coords,
+                    color='#808080', weight=1, opacity=0.4, dash_array='10, 10',
+                    tooltip='Influence Width Left Boundary'
+                ).add_to(m_xs)
+                folium.PolyLine(
+                    locations=influence_right_coords,
+                    color='#808080', weight=1, opacity=0.4, dash_array='10, 10',
+                    tooltip='Influence Width Right Boundary'
                 ).add_to(m_xs)
             except Exception:
                 pass  # Silently fail if data not ready
@@ -5421,6 +5444,32 @@ Perpendicular distance from profile centreline where terrain modification applie
                     locations=swale_polyline_coords,
                     color="#00BFFF", weight=6, opacity=0.4, dash_array=None,
                     tooltip="Swale Cross-Section"
+                ).add_to(m_xs)
+                # Add influence width boundaries for swale
+                tangents_xs, normals_xs = compute_tangents_normals(samples)
+                influence_left_coords = []
+                influence_right_coords = []
+                for station_idx in range(len(stations)):
+                    xc_s, yc_s = center_xy[station_idx]
+                    nx_s, ny_s = normals_xs[station_idx]
+                    # Influence width boundaries
+                    x_il = xc_s - influence_width_xs * nx_s
+                    y_il = yc_s - influence_width_xs * ny_s
+                    lon_il, lat_il = transformer_to_map.transform(x_il, y_il)
+                    influence_left_coords.append([lat_il, lon_il])
+                    x_ir = xc_s + influence_width_xs * nx_s
+                    y_ir = yc_s + influence_width_xs * ny_s
+                    lon_ir, lat_ir = transformer_to_map.transform(x_ir, y_ir)
+                    influence_right_coords.append([lat_ir, lon_ir])
+                folium.PolyLine(
+                    locations=influence_left_coords,
+                    color='#808080', weight=1, opacity=0.4, dash_array='10, 10',
+                    tooltip='Influence Width Left Boundary'
+                ).add_to(m_xs)
+                folium.PolyLine(
+                    locations=influence_right_coords,
+                    color='#808080', weight=1, opacity=0.4, dash_array='10, 10',
+                    tooltip='Influence Width Right Boundary'
                 ).add_to(m_xs)
             except Exception:
                 pass  # Silently fail if data not ready
